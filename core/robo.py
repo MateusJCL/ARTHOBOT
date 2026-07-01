@@ -75,8 +75,12 @@ TESLA_ENGINE_JS = r"""
     @keyframes atrop-blink{50%{opacity:.25}}
     #atropbot-console{position:fixed;top:14px;left:14px;width:430px;max-width:44vw;max-height:52vh;display:flex;flex-direction:column;
       background:rgba(2,6,23,.92);color:#e2e8f0;border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.55);
-      border:1px solid rgba(56,189,248,.35);z-index:2147483647;pointer-events:auto;overflow:hidden;
+      border:1px solid rgba(56,189,248,.35);z-index:2147483647;pointer-events:none;overflow:hidden;
       font:500 12px/1.5 'JetBrains Mono',Consolas,Menlo,monospace}
+    .atrop-box{position:fixed;border:2px solid #22c55e;border-radius:4px;box-shadow:0 0 0 2px rgba(34,197,94,.25),0 0 12px rgba(34,197,94,.5);
+      pointer-events:none;z-index:2147483646;transition:opacity .3s}
+    .atrop-box>span{position:absolute;top:-19px;left:-2px;background:#22c55e;color:#052e16;font:700 10px/1 Inter,system-ui,sans-serif;
+      padding:3px 6px;border-radius:4px 4px 4px 0;white-space:nowrap;letter-spacing:.02em}
     #atropbot-console .atrop-chead{display:flex;align-items:center;gap:8px;padding:9px 12px;background:rgba(15,23,42,.95);
       border-bottom:1px solid rgba(56,189,248,.25);font-weight:700;letter-spacing:.12em;font-size:10px;text-transform:uppercase;color:#7dd3fc}
     #atropbot-console .atrop-cdot{width:8px;height:8px;border-radius:50%;background:#38bdf8;box-shadow:0 0 8px #38bdf8;animation:atrop-blink 1s infinite}
@@ -170,6 +174,19 @@ TESLA_ENGINE_JS = r"""
       const r = document.createElement('div'); r.className = 'atrop-ripple';
       r.style.left = x + 'px'; r.style.top = y + 'px';
       layer.appendChild(r); setTimeout(() => r.remove(), 600);
+    },
+    box: function (x, y, w, h, label, cor) {
+      cor = cor || '#22c55e';
+      const b = document.createElement('div'); b.className = 'atrop-box';
+      b.style.left = x + 'px'; b.style.top = y + 'px';
+      b.style.width = Math.max(w, 6) + 'px'; b.style.height = Math.max(h, 6) + 'px';
+      b.style.borderColor = cor; b.style.boxShadow = '0 0 0 2px ' + cor + '40,0 0 12px ' + cor + '80';
+      if (label) {
+        const t = document.createElement('span'); t.textContent = label;
+        t.style.background = cor; b.appendChild(t);
+      }
+      layer.appendChild(b);
+      setTimeout(() => { b.style.opacity = '0'; setTimeout(() => b.remove(), 300); }, 1700);
     }
   };
   window.__ATROPBOT = A;
@@ -466,6 +483,8 @@ class RoboAtropbot:
 
                 screenshot = self._tirar_screenshot(page, f"evento_{tipo}")
                 db.registrar_evento_trizy(tipo, texto, item_id=item_id, placa=placa, screenshot_path=screenshot)
+                cor_evento = "#ef4444" if tipo == "erro" else ("#22c55e" if tipo == "sucesso" else "#38bdf8")
+                self._contornar(page, elemento, f"Trizy diz: {texto[:40]}", cor=cor_evento)
                 self._log(f"📋 [Captura de tela] ({seletor}) \"{texto[:120]}\"")
                 self._log_bus.publicar({"tipo": "evento_trizy", "evento_tipo": tipo, "texto": texto})
             except Exception:
@@ -714,6 +733,7 @@ class RoboAtropbot:
                 valor_atual = (datepicker.locator("input").first.input_value(timeout=1000) or "").strip()
             except Exception:
                 valor_atual = ""
+            self._ver(page, datepicker.locator("input").first, "Validade CNH (atual)")
             if not self._data_vencida_ou_vazia(valor_atual):
                 self._log(f"[{placa}] Validade da CNH já é futura ({valor_atual}). Mantendo.")
                 return
@@ -775,6 +795,52 @@ class RoboAtropbot:
             )
         except Exception:
             pass
+
+    def _contornar(self, page, locator, rotulo="", cor="#22c55e"):
+        """Desenha uma CAIXA (retângulo colorido com rótulo) em volta do
+        elemento no overlay, mostrando o que o robô está enxergando. Não lê
+        conteúdo nem escreve no console. Best-effort."""
+        self._garantir_tesla(page)
+        try:
+            box = locator.bounding_box()
+        except Exception:
+            box = None
+        if not box:
+            return
+        rotulo_curto = rotulo if len(rotulo) <= 48 else rotulo[:47] + "…"
+        try:
+            page.evaluate(
+                "([x, y, w, h, l, c]) => { if (window.__ATROPBOT) window.__ATROPBOT.box(x, y, w, h, l, c); }",
+                [box["x"], box["y"], box["width"], box["height"], rotulo_curto, cor],
+            )
+        except Exception:
+            pass
+
+    def _ver(self, page, locator, rotulo, ler=True):
+        """"Modo percepção": contorna o elemento com uma CAIXA VERDE (como um
+        detector), lê o conteúdo dele (valor do input ou texto) e escreve no
+        console o que foi lido — deixando exposto o que o robô vê/lê. Só
+        visual (best-effort). Retorna o texto lido (ou "")."""
+        conteudo = ""
+        try:
+            locator.scroll_into_view_if_needed(timeout=1500)
+        except Exception:
+            pass
+        if ler:
+            try:
+                conteudo = (locator.input_value(timeout=600) or "").strip()
+            except Exception:
+                conteudo = ""
+            if not conteudo:
+                try:
+                    conteudo = (locator.inner_text(timeout=600) or "").strip()
+                except Exception:
+                    conteudo = ""
+        conteudo = " ".join(conteudo.split())
+        self._contornar(page, locator, rotulo, cor="#22c55e")
+        lido = conteudo if conteudo else "(vazio)"
+        self._console(page, f"👁 {rotulo}: {lido[:120]}", nivel="ok")
+        return conteudo
 
     def _apontar(self, page, locator, label="", cor="#38bdf8"):
         """"Mira" no elemento: leva o cursor do overlay até ele (com rastro),
@@ -953,6 +1019,7 @@ class RoboAtropbot:
                     except Exception:
                         page.locator("xpath=//label[contains(text(), 'CPF')]/following::input[1]").fill(cpf)
                     time.sleep(2)
+                    self._ver(page, page.locator("input[aria-label*='CPF']").first, "CPF")
                     self._capturar_qualquer_evento_na_tela(page, placa)
                     self._checkpoint("cpf", f"CPF {cpf} preenchido. Próximo passo: validade da CNH e composição.")
 
@@ -982,6 +1049,7 @@ class RoboAtropbot:
                         raise Exception("Sem Composição no painel.")
 
                     time.sleep(2)
+                    self._ver(page, page.locator("md-select[aria-label*='Composição']").first, "Composição")
                     self._capturar_qualquer_evento_na_tela(page, placa)
                     self._checkpoint("composicao", f"Composição selecionada. Próximo passo: cravar a placa {placa}.")
 
@@ -1000,6 +1068,7 @@ class RoboAtropbot:
                         page.keyboard.press("Control+A")
                         page.keyboard.press("Backspace")
                         page.keyboard.type(placa, delay=100)
+                        self._ver(page, campo_placa, "Placa da Tração")
                     except Exception:
                         raise Exception("DOM da Placa não encontrado.")
 
@@ -1035,6 +1104,7 @@ class RoboAtropbot:
                         raise Exception(f"Sem CTR ({contrato}) no painel.")
 
                     time.sleep(1)
+                    self._ver(page, page.locator("md-input-container:has(label:has-text('Cota')) input").first, "Cota/CTR")
                     self._capturar_qualquer_evento_na_tela(page, placa)
                     self._checkpoint("ctr", f"CTR {contrato} confirmado. Próximo passo: quantidade e finalização.")
 
