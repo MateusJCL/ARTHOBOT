@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATROPBOT — Orquestrador Logístico</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css?v=4">
+</head>
+<body>
+
+<div class="app-shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">AB</div>
+      <div class="brand-text">
+        <strong>ATROPBOT</strong>
+        <span>Orquestrador Logístico</span>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item is-active" data-aba="operacao">
+        <span class="nav-icon">▶</span> Operação
+      </button>
+      <button class="nav-item" data-aba="configuracoes">
+        <span class="nav-icon">⚙</span> Configurações
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-texto">Parado</span>
+    </div>
+  </aside>
+
+  <main class="conteudo">
+
+    <div class="lote-ativo" id="lote-ativo">
+      <span class="lote-pin">📌</span>
+      <span class="lote-label">LOTE ATIVO</span>
+      <span class="lote-dado">Terminal: <strong id="lote-terminal">—</strong></span>
+      <span class="lote-dado">Fazenda: <strong id="lote-fazenda">—</strong></span>
+      <span class="lote-dado">Contrato: <strong id="lote-contrato">—</strong></span>
+    </div>
+
+    <section class="aba" id="aba-operacao">
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Configuração do Lote e Veículo</h3>
+          <span class="card-subtitulo">Nada é lembrado de sessões anteriores — confirme o lote antes de adicionar veículos.</span>
+        </div>
+        <div class="card-body">
+          <form id="form-lote" class="form-linha">
+            <div class="campo campo-md">
+              <label for="lote-terminal-input">Terminal</label>
+              <select id="lote-terminal-input">
+                <option value="" disabled selected>Selecione um Terminal...</option>
+                <option value="FS LUCAS DO RIO VERDE">FS LUCAS DO RIO VERDE</option>
+                <option value="FS AGRISOLUTIONS SORRISO">FS AGRISOLUTIONS SORRISO</option>
+              </select>
+            </div>
+            <div class="campo campo-md">
+              <label for="lote-fazenda-input">Fazenda Origem</label>
+              <input type="text" id="lote-fazenda-input" autocomplete="off" placeholder="clique para ver cadastradas">
+            </div>
+            <div class="campo campo-md">
+              <label for="lote-contrato-input">Contrato (CTR)</label>
+              <input type="text" id="lote-contrato-input" autocomplete="off" placeholder="vem da fazenda, ou digite">
+            </div>
+            <div class="campo campo-acoes">
+              <button type="button" class="btn btn-ghost" id="btn-limpar-lote">Limpar Lote</button>
+            </div>
+          </form>
+
+          <div class="divisor"></div>
+
+          <form id="form-veiculo-fila" class="form-linha">
+            <div class="campo campo-sm">
+              <label for="fila-placa-input">Buscar Placa</label>
+              <input type="text" id="fila-placa-input" autocomplete="off" placeholder="ABC1D23">
+            </div>
+            <div class="campo campo-md">
+              <label for="fila-cpf-input">CPF Automático</label>
+              <input type="text" id="fila-cpf-input" autocomplete="off">
+            </div>
+            <div class="campo campo-acoes">
+              <button type="submit" class="btn btn-success">+ Adicionar à Fila</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="linha-acoes-operacao">
+        <button class="btn btn-ghost" id="btn-remover-selecionados">🗑 Remover Selecionados</button>
+        <span class="dica-texto dica-flex">Processa a fila em sequência: agenda um, confirma, e segue para o próximo.</span>
+        <label class="chk-guiado">
+          <input type="checkbox" id="chk-modo-guiado"> Modo Guiado
+        </label>
+        <button class="btn btn-ghost" id="btn-pausar" hidden>⏸ Pausar</button>
+        <button class="btn btn-primary" id="btn-iniciar">▶ Iniciar ATROPBOT</button>
+      </div>
+
+      <div class="grid-operacao">
+        <div class="card card-fila">
+          <div class="card-header card-header-flex">
+            <h3>Fila de Agendamentos</h3>
+            <div class="card-header-acoes">
+              <button class="btn btn-ghost btn-sm" id="btn-reorganizar-fila" title="Agrupa veículos do mesmo Terminal/Fazenda/Contrato — o robô troca de lote menos vezes">🧩 Reorganizar por Lote</button>
+              <button class="btn btn-ghost btn-sm" id="btn-reprocessar-erros">🔄 Reprocessar Erros</button>
+            </div>
+          </div>
+          <div class="card-body card-body-flush">
+            <div class="tabela-wrap tabela-wrap-fila">
+              <table class="tabela" id="tabela-fila">
+                <thead>
+                  <tr>
+                    <th class="th-check"><input type="checkbox" id="check-todos-fila"></th>
+                    <th>Terminal</th><th>Fazenda</th><th>Contrato</th><th>Placa</th><th>CPF</th><th>Status</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card card-log">
+          <div class="card-header"><h3>Log Geral</h3></div>
+          <div class="card-body card-body-flush">
+            <pre class="log-area" id="log-geral"></pre>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="aba" id="aba-configuracoes" hidden>
+
+      <header class="aba-header">
+        <h1>Configurações Globais</h1>
+        <p>Tudo centralizado aqui: veículos, vínculos de fazendas com contratos e o login do Trizy.</p>
+      </header>
+
+      <div class="grid-config">
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Cadastro de Veículo</h3>
+          </div>
+          <div class="card-body">
+            <form id="form-veiculo" class="form-linha">
+              <input type="hidden" id="veiculo-placa-original" value="">
+              <div class="campo campo-sm">
+                <label for="veiculo-placa">Placa</label>
+                <input type="text" id="veiculo-placa" maxlength="8" autocomplete="off" placeholder="ABC1D23">
+              </div>
+              <div class="campo campo-lg">
+                <label for="veiculo-motorista">Motorista</label>
+                <input type="text" id="veiculo-motorista" autocomplete="off" placeholder="Nome completo">
+              </div>
+              <div class="campo campo-md">
+                <label for="veiculo-cpf">CPF</label>
+                <input type="text" id="veiculo-cpf" autocomplete="off" placeholder="000.000.000-00">
+              </div>
+              <div class="campo campo-acoes">
+                <button type="submit" class="btn btn-primary" id="btn-salvar-veiculo">Salvar Veículo</button>
+                <button type="button" class="btn btn-ghost" id="btn-cancelar-edicao-veiculo" hidden>Cancelar</button>
+              </div>
+            </form>
+            <div class="linha-secundaria">
+              <label class="btn btn-success btn-arquivo">
+                Importar CSV
+                <input type="file" id="input-csv" accept=".csv" hidden>
+              </label>
+              <span class="dica-texto">Colunas: placa, motorista, cpf — com cabeçalho na primeira linha.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Nova Fazenda e Contrato</h3>
+            <span class="card-subtitulo">Cadastre a fazenda já amarrada ao seu CTR. O painel da operação puxará automaticamente.</span>
+          </div>
+          <div class="card-body">
+            <form id="form-vinculo" class="form-linha">
+              <div class="campo campo-md">
+                <label for="vinculo-fazenda">Nome da Fazenda</label>
+                <input type="text" id="vinculo-fazenda" autocomplete="off" placeholder="ex: FS AGRISOLUTIONS SORRISO">
+              </div>
+              <div class="campo campo-md">
+                <label for="vinculo-contrato">Contrato (CTR)</label>
+                <input type="text" id="vinculo-contrato" autocomplete="off" placeholder="ex: 4500123">
+              </div>
+              <div class="campo campo-acoes">
+                <button type="submit" class="btn btn-primary">+ Vincular</button>
+              </div>
+            </form>
+            <div class="tabela-wrap">
+              <table class="tabela" id="tabela-vinculos">
+                <thead><tr><th class="th-check"><input type="checkbox" id="check-todos-vinculos"></th><th>Fazenda</th><th>Contrato</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <button class="btn btn-danger btn-sm" id="btn-excluir-vinculos">Remover Selecionados</button>
+          </div>
+        </div>
+
+        <div class="card card-wide">
+          <div class="card-header">
+            <h3>Navegação Manual</h3>
+            <span class="card-subtitulo">Abre a janela do Chromium sem disparar a fila. Útil para preencher o Cloudflare de antemão ou verificar o sistema.</span>
+          </div>
+          <div class="card-body">
+            <div class="linha-secundaria">
+              <button type="button" class="btn btn-ghost" id="btn-abrir-nav-manual">🌐 Abrir Navegador Trizy</button>
+              <button type="button" class="btn btn-danger" id="btn-forcar-fechar-nav" title="Use se o app continuar dizendo que o navegador está aberto mesmo depois de você fechá-lo">🔌 Fechar Navegador (forçado)</button>
+            </div>
+            <p class="dica-texto" style="margin-top:8px;">Se o status continuar marcando o navegador como aberto mesmo depois de você já ter fechado a janela, use o botão "Fechar Navegador (forçado)" para zerar o estado.</p>
+          </div>
+        </div>
+
+        <div class="card card-wide">
+          <div class="card-header">
+            <h3>Login Trizy (autopreenchimento)</h3>
+            <span class="card-subtitulo">O robô preenche e-mail e senha ao achar a tela de login — a confirmação de clicar em Entrar é sempre sua.</span>
+          </div>
+          <div class="card-body">
+            <form id="form-trizy" class="form-linha">
+              <div class="campo campo-lg">
+                <label for="trizy-email">E-mail ou telefone</label>
+                <input type="text" id="trizy-email" autocomplete="off">
+              </div>
+              <div class="campo campo-md">
+                <label for="trizy-senha">Senha</label>
+                <div class="campo-senha">
+                  <input type="password" id="trizy-senha" autocomplete="off">
+                  <button type="button" class="btn-olho" id="btn-olho-senha" title="Mostrar/ocultar senha">👁</button>
+                </div>
+              </div>
+              <div class="campo campo-acoes">
+                <button type="submit" class="btn btn-primary">Salvar Credenciais</button>
+              </div>
+            </form>
+            <p class="aviso-senha">⚠ A senha é salva em texto simples neste computador (sem criptografia). Evite compartilhar o arquivo <code>atropbot.db</code>.</p>
+          </div>
+        </div>
+
+        <div class="card card-wide">
+          <div class="card-header">
+            <h3>Placas Cadastradas</h3>
+            <span class="card-subtitulo">Clique numa linha para editar. Selecione e use os botões para agir em várias de uma vez.</span>
+          </div>
+          <div class="card-body">
+            <div class="tabela-wrap tabela-wrap-lg">
+              <table class="tabela" id="tabela-veiculos">
+                <thead>
+                  <tr>
+                    <th class="th-check"><input type="checkbox" id="check-todos-veiculos"></th>
+                    <th>Placa</th><th>Motorista</th><th>CPF</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <button class="btn btn-danger btn-sm" id="btn-excluir-veiculos">Excluir Selecionados</button>
+          </div>
+        </div>
+
+        <div class="card card-wide">
+          <div class="card-header">
+            <h3>Histórico de Eventos do Trizy</h3>
+            <span class="card-subtitulo">Tudo que o robô viu aparecer NA TELA do Trizy durante as execuções — erros, sucessos e avisos, com print do momento. Útil para identificar padrões de erro ainda não tratados.</span>
+          </div>
+          <div class="card-body">
+            <div class="form-linha" style="margin-bottom:10px;">
+              <div class="campo campo-md">
+                <label for="filtro-tipo-evento">Filtrar por tipo</label>
+                <select id="filtro-tipo-evento">
+                  <option value="">Todos</option>
+                  <option value="erro">Só Erros</option>
+                  <option value="sucesso">Só Sucessos</option>
+                  <option value="desconhecido">Não classificados</option>
+                </select>
+              </div>
+              <div class="campo campo-acoes">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-atualizar-eventos">🔄 Atualizar</button>
+              </div>
+            </div>
+            <div class="eventos-trizy-lista" id="eventos-trizy-lista">
+              <p class="dica-texto">Carregando...</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<div class="modal-overlay" id="modal-ctr" hidden>
+  <div class="modal modal-aviso">
+    <h3 class="modal-titulo titulo-danger">⛔ CTR inválido ou inexistente</h3>
+    <p id="modal-ctr-texto"></p>
+    <p class="modal-explicacao">Todos os itens com esse mesmo Terminal/Fazenda/Contrato foram retidos para evitar tentativas inúteis. O que você quer fazer?</p>
+    <div class="modal-botoes">
+      <button class="btn btn-primary" id="btn-ctr-tentar">Tentar de Novo</button>
+      <button class="btn btn-danger" id="btn-ctr-pular">Pular Este Lote</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-navegador" hidden>
+  <div class="modal modal-aviso">
+    <h3 class="modal-titulo titulo-danger">🔴 Navegador foi fechado</h3>
+    <p>A fila foi pausada automaticamente — nenhum item foi perdido. O que você quer fazer agora?</p>
+    <div class="modal-botoes">
+      <button class="btn btn-primary" id="btn-nav-reabrir">Reabrir e Continuar</button>
+      <button class="btn btn-danger" id="btn-nav-cancelar">Cancelar Fila</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-erro-trizy" hidden>
+  <div class="modal modal-aviso">
+    <h3 class="modal-titulo titulo-danger">⚠ O Trizy exibiu um aviso de erro</h3>
+    <p id="modal-erro-trizy-texto"></p>
+    <p class="modal-explicacao">A fila foi pausada — nenhum item foi perdido. O que você quer fazer?</p>
+    <div class="modal-botoes">
+      <button class="btn btn-primary" id="btn-erro-trizy-tentar">Tentar de Novo</button>
+      <button class="btn btn-danger" id="btn-erro-trizy-cancelar">Cancelar Fila</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-checkpoint" hidden>
+  <div class="modal modal-aviso">
+    <h3 class="modal-titulo">⏵ Próxima ação — veículo <span id="modal-checkpoint-placa">?</span></h3>
+    <p id="modal-checkpoint-etapa"></p>
+    <div class="modal-botoes">
+      <button class="btn btn-primary modal-botao-unico" id="btn-checkpoint-continuar">Continuar ▶</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-log-item" hidden>
+  <div class="modal modal-log">
+    <div class="modal-log-header">
+      <h3>Log — <span id="modal-log-item-placa">?</span></h3>
+      <button class="btn-fechar-modal" id="btn-fechar-log-item">✕</button>
+    </div>
+    <pre class="log-area" id="modal-log-item-conteudo"></pre>
+  </div>
+</div>
+
+<script src="/static/app.js?v=4"></script>
+</body>
+</html>
