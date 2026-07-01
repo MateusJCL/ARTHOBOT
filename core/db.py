@@ -42,14 +42,17 @@ def setup_db():
                         cpf TEXT,
                         status TEXT,
                         criado_em REAL,
-                        ordem INTEGER
+                        ordem INTEGER,
+                        data_cota TEXT
                      )""")
-        # Migração segura para bancos já existentes (criados antes da
-        # coluna 'ordem' existir) — adiciona a coluna se ainda não tiver.
+        # Migração segura para bancos já existentes (criados antes de uma
+        # coluna existir) — adiciona a coluna se ainda não tiver.
         c.execute("PRAGMA table_info(fila_itens)")
         colunas_existentes = {linha[1] for linha in c.fetchall()}
         if "ordem" not in colunas_existentes:
             c.execute("ALTER TABLE fila_itens ADD COLUMN ordem INTEGER")
+        if "data_cota" not in colunas_existentes:
+            c.execute("ALTER TABLE fila_itens ADD COLUMN data_cota TEXT")
         c.execute("""CREATE TABLE IF NOT EXISTS fila_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         item_id INTEGER,
@@ -273,7 +276,8 @@ def listar_fila():
     with _lock:
         conn = _conn()
         c = conn.cursor()
-        c.execute("""SELECT id, terminal, fazenda, contrato, placa, cpf, status
+        c.execute("""SELECT id, terminal, fazenda, contrato, placa, cpf, status,
+                            COALESCE(data_cota, '')
                      FROM fila_itens ORDER BY COALESCE(ordem, id), id""")
         rows = c.fetchall()
         conn.close()
@@ -325,26 +329,26 @@ def listar_fila_com_indice_lote():
     rows = listar_fila()
     indice_por_chave = {}
     resultado = []
-    for item_id, terminal, fazenda, contrato, placa, cpf, status in rows:
+    for item_id, terminal, fazenda, contrato, placa, cpf, status, data_cota in rows:
         chave = (terminal, fazenda, contrato)
         if chave not in indice_por_chave:
             indice_por_chave[chave] = len(indice_por_chave)
         resultado.append(
-            (item_id, terminal, fazenda, contrato, placa, cpf, status, indice_por_chave[chave])
+            (item_id, terminal, fazenda, contrato, placa, cpf, status, data_cota, indice_por_chave[chave])
         )
     return resultado
 
 
-def adicionar_item_fila(terminal, fazenda, contrato, placa, cpf, status="Aguardando..."):
+def adicionar_item_fila(terminal, fazenda, contrato, placa, cpf, status="Aguardando...", data_cota=""):
     with _lock:
         conn = _conn()
         c = conn.cursor()
         c.execute("SELECT COALESCE(MAX(ordem), -1) FROM fila_itens")
         proxima_ordem = c.fetchone()[0] + 1
         c.execute(
-            """INSERT INTO fila_itens (terminal, fazenda, contrato, placa, cpf, status, criado_em, ordem)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (terminal, fazenda, contrato, placa, cpf, status, time.time(), proxima_ordem),
+            """INSERT INTO fila_itens (terminal, fazenda, contrato, placa, cpf, status, criado_em, ordem, data_cota)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (terminal, fazenda, contrato, placa, cpf, status, time.time(), proxima_ordem, data_cota),
         )
         conn.commit()
         novo_id = c.lastrowid
@@ -386,7 +390,8 @@ def buscar_item_fila(item_id):
     with _lock:
         conn = _conn()
         c = conn.cursor()
-        c.execute("""SELECT id, terminal, fazenda, contrato, placa, cpf, status
+        c.execute("""SELECT id, terminal, fazenda, contrato, placa, cpf, status,
+                            COALESCE(data_cota, '')
                      FROM fila_itens WHERE id=?""", (item_id,))
         row = c.fetchone()
         conn.close()

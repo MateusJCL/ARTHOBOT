@@ -3,7 +3,7 @@
 # ==========================================
 import os
 import time
-import threading
+from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
 import core.db as db
@@ -14,6 +14,16 @@ PASTA_SCREENSHOTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 os.makedirs(PASTA_SCREENSHOTS, exist_ok=True)
 CNPJ_FATURAMENTO = "38561359000100"
 URL_PAINEL = "https://plataforma.trizy.com.br/#/terminal/painel"
+
+# Quando a "Data Validade da CNH" vier vazia ou vencida, o robô a
+# substitui por HOJE + este número de dias (o Trizy só exige que seja
+# maior que o dia atual). Ajuste aqui se quiser outra folga.
+CNH_DIAS_BUFFER = 5
+
+# Quantas tentativas TOTAIS cada item tem antes de ficar como erro de vez.
+# 2 = a tentativa normal + 1 reprocesso automático no fim da fila (assim um
+# item que deu erro não fica "esquecido" enquanto o resto é agendado).
+MAX_TENTATIVAS_ITEM = 2
 
 STATUS_JA_CONCLUIDOS = ("Sucesso",)
 STATUS_CTR_INVALIDO = "CTR Inválido — Fila Pausada"
@@ -43,45 +53,33 @@ class SessaoNavegador:
             self._maquina.pausar_por_navegador_fechado(item_id)
 
     def esta_viva(self):
-        """A flag is_open é atualizada pelo evento 'close' do Playwright,
-        mas esse evento NÃO tem garantia de disparar sempre — se o Chrome
-        for finalizado de forma abrupta (crash, 'Finalizar tarefa', ou
-        certos fechamentos rápidos), a conexão CDP morre antes de avisar,
-        e a flag fica travada em True para sempre. Por isso, além da
-        flag, fazemos uma checagem ATIVA real: tentar ler page.url.
+        """Retorna se o navegador está aberto baseado SOMENTE na flag
+        `is_open` — sem tocar em nenhum objeto Playwright.
 
-        Essa leitura roda numa thread separada com timeout curto — se a
-        conexão CDP ficar 'pendurada' (não dá erro, mas também nunca
-        responde, em vez de falhar rápido), não podemos deixar isso
-        travar quem chamou esta_viva(). Como /api/robo/estado chama isto
-        a cada poucos segundos, uma chamada pendurada aqui travava a
-        interface inteira (e dava a impressão de bug de 'nunca atualiza'
-        ou 'página em branco', quando na real era tudo represado
-        esperando essa checagem que nunca terminava)."""
-        if not self.is_open or self.page is None:
-            return False
+        POR QUÊ (correção do congelamento / falso 'navegador fechado' /
+        página em branco ao Iniciar): o Playwright *sync* só pode ser
+        usado na MESMA thread que criou o navegador (a thread do robô).
+        Esta função, porém, é chamada pela thread do Flask (o polling de
+        /api/robo/estado, a cada 1,5s). A versão antiga lia `self.page.url`
+        aqui (mesmo que dentro de uma sub-thread) — isso é acesso
+        cross-thread ao Playwright, que ora estoura exceção, ora
+        'pendura'. Resultado:
+          • falso 'Navegador foi fechado' (a leitura falhava/estourava o
+            timeout e o código concluía 'morto' com o Chrome aberto);
+          • congelamento da interface (cada poll ficava até 1,5s preso e
+            podia segurar o lock interno do Playwright);
+          • página em branco ao Iniciar (a trava que exige fechar o
+            Chrome dependia dessa checagem furada; quando ela errava,
+            o app subia um segundo Chrome no MESMO perfil já aberto,
+            que carrega travado em about:blank).
 
-        resultado = {"vivo": None}
-
-        def _checar():
-            try:
-                _ = self.page.url
-                resultado["vivo"] = True
-            except Exception:
-                resultado["vivo"] = False
-
-        t = threading.Thread(target=_checar, daemon=True)
-        t.start()
-        t.join(timeout=1.5)
-
-        if resultado["vivo"] is True:
-            return True
-
-        # Tanto se deu erro (página morta) quanto se nem respondeu a
-        # tempo (conexão pendurada) — nos dois casos, trate como morto.
-        # Corrige o estado para refletir a realidade.
-        self._notificar_fechamento()
-        return False
+        A flag `is_open` é atualizada de forma segura entre threads:
+        vira True em abrir(); vira False pelo evento 'close' do Playwright
+        (context/page.on('close')) e pelo robô quando uma ação estoura
+        'Target closed'. Se o Chrome for morto de forma abrupta e o
+        evento 'close' não disparar, use 'Fechar Navegador (forçado)'
+        em Configurações para zerar o estado."""
+        return bool(self.is_open) and self.page is not None
 
     def forcar_fechamento(self):
         """'Tirar o plugue da tomada' — usado pelo botão manual em
@@ -357,6 +355,106 @@ class RoboAtropbot:
         except Exception:
             pass
 
+    def _achar_input_por_label(self, page, textos_label):
+        """Tenta localizar um input pelo texto do rótulo (label), cobrindo
+        os dois padrões que o Trizy usa: md-input-container (AngularJS
+        Material) e o xpath genérico label→input seguinte. Retorna o
+        Locator ou None. `textos_label` é uma lista de textos possíveis
+        (ex.: variações do mesmo rótulo)."""
+        for texto in textos_label:
+            try:
+                alvo = page.locator(f"md-input-container:has(label:has-text('{texto}')) input").first
+                if alvo.count() > 0 and alvo.is_visible(timeout=800):
+                    return alvo
+            except Exception:
+                pass
+            try:
+                alvo = page.locator(
+                    f"xpath=//label[contains(normalize-space(.), '{texto}')]/following::input[1]"
+                ).first
+                if alvo.count() > 0 and alvo.is_visible(timeout=800):
+                    return alvo
+            except Exception:
+                pass
+        return None
+
+    def _data_vencida_ou_vazia(self, valor):
+        """True se o texto de data (dd/mm/aaaa) estiver vazio ou for <= hoje.
+        Qualquer coisa que não dê para interpretar é tratada como 'precisa
+        corrigir' (retorna True), para nunca deixar passar uma validade
+        que o Trizy vá recusar."""
+        valor = (valor or "").strip()
+        if not valor:
+            return True
+        try:
+            data = datetime.strptime(valor, "%d/%m/%Y").date()
+        except Exception:
+            return True
+        return data <= datetime.now().date()
+
+    def _preencher_validade_cnh(self, page, placa):
+        """Corrige a 'Data Validade da CNH': se vier vazia ou vencida, apaga
+        e escreve HOJE + CNH_DIAS_BUFFER dias — em vez de deixar o Trizy
+        exibir 'A data de validade deve ser maior que o dia atual' e a fila
+        pausar. Se a data já for futura, não mexe."""
+        alvo = datetime.now().date() + timedelta(days=CNH_DIAS_BUFFER)
+        alvo_str = alvo.strftime("%d/%m/%Y")
+        try:
+            campo = self._achar_input_por_label(
+                page, ["Data Validade da CNH", "Validade da CNH", "Validade CNH"]
+            )
+            if campo is None:
+                self._log(f"[{placa}] Campo 'Data Validade da CNH' não encontrado — seguindo sem alterar.")
+                return
+            try:
+                valor_atual = (campo.input_value(timeout=1000) or "").strip()
+            except Exception:
+                valor_atual = ""
+            if not self._data_vencida_ou_vazia(valor_atual):
+                self._log(f"[{placa}] Validade da CNH já é futura ({valor_atual}). Mantendo.")
+                return
+            self._log(f"[{placa}] Validade da CNH vazia/vencida ({valor_atual or 'vazia'}). Ajustando para {alvo_str}.")
+            campo.click(force=True)
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            campo.type(alvo_str, delay=60)
+            page.keyboard.press("Tab")
+            time.sleep(0.5)
+        except Exception as e:
+            self._log(f"[{placa}] Não consegui ajustar a Validade da CNH automaticamente: {str(e)[:120]}")
+
+    def _preencher_data_cota(self, page, placa, data_cota):
+        """Preenche o campo de DATA da seção 'Contrato' (a Data da Cota)
+        antes de selecionar a Cota — o Trizy só habilita a Cota depois que
+        essa data está preenchida ('Para selecionar uma cota, é obrigatório
+        preencher a data primeiro'). `data_cota` vem no formato dd/mm/aaaa."""
+        data_cota = (data_cota or "").strip()
+        if not data_cota:
+            self._log(f"[{placa}] Sem Data da Cota definida para este item — pulando o preenchimento da data.")
+            return
+        try:
+            campo = self._achar_input_por_label(page, ["Cota", "Contrato"])
+            # A busca acima pode acabar pegando o próprio input da Cota; por
+            # isso preferimos o input do datepicker da seção Contrato.
+            try:
+                dp = page.locator("md-datepicker input").last
+                if dp.count() > 0 and dp.is_visible(timeout=800):
+                    campo = dp
+            except Exception:
+                pass
+            if campo is None:
+                self._log(f"[{placa}] Campo de Data da Cota não encontrado — seguindo (a Cota pode falhar).")
+                return
+            self._log(f"[{placa}] Preenchendo Data da Cota: {data_cota}...")
+            campo.click(force=True)
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            campo.type(data_cota, delay=60)
+            page.keyboard.press("Tab")
+            time.sleep(1)
+        except Exception as e:
+            self._log(f"[{placa}] Não consegui preencher a Data da Cota: {str(e)[:120]}")
+
     def executar(self, itens_fila, sessao):
         self._log("--- INICIANDO ATROPBOT ---")
         self._maquina.iniciar_execucao()
@@ -387,7 +485,16 @@ class RoboAtropbot:
 
             lotes_bloqueados = set()
 
-            for item_id, fs_destino, fazenda, contrato, placa, cpf, status in itens_fila:
+            # Worklist mutável: itens que derem erro recuperável são
+            # RE-ENFILEIRADOS no fim (até MAX_TENTATIVAS_ITEM), para não
+            # ficarem "esquecidos" enquanto o resto da fila é agendado.
+            fila_trabalho = list(itens_fila)
+            tentativas = {}
+            _idx = 0
+
+            while _idx < len(fila_trabalho):
+                item_id, fs_destino, fazenda, contrato, placa, cpf, status, data_cota = fila_trabalho[_idx]
+                _idx += 1
                 self._checar_pausa()
                 if self._maquina.cancelado:
                     self._log("Execução cancelada pelo usuário. Navegador permanece aberto.")
@@ -471,36 +578,12 @@ class RoboAtropbot:
                         page.locator("xpath=//label[contains(text(), 'CPF')]/following::input[1]").fill(cpf)
                     time.sleep(2)
                     self._capturar_qualquer_evento_na_tela(page, placa)
-                    self._checkpoint("cpf", f"CPF {cpf} preenchido. Próximo passo: calendário e composição.")
+                    self._checkpoint("cpf", f"CPF {cpf} preenchido. Próximo passo: validade da CNH e composição.")
 
-                    # 2.1 CALENDÁRIO PREVENTIVO
+                    # 2.1 VALIDADE DA CNH (auto-correção)
                     self._checar_pausa()
-                    self._log(f"[{placa}] Verificando Calendário preventivo...")
-                    try:
-                        btn_calendario = page.locator("md-datepicker button").first
-                        if btn_calendario.is_visible(timeout=3000):
-                            btn_calendario.click(force=True)
-                            time.sleep(1)
-
-                            seta_proximo = page.locator("button.md-calendar-next-month").first
-                            if not seta_proximo.is_visible():
-                                seta_proximo = page.locator("button[aria-label*='Próximo'], button[aria-label*='Next']").first
-
-                            for _ in range(12):
-                                if seta_proximo.is_visible():
-                                    seta_proximo.click(force=True)
-                                    time.sleep(0.05)
-
-                            dia_escolhido = page.locator("td.md-calendar-date:not(.md-calendar-date-disabled) span:text-is('15')").first
-                            if dia_escolhido.is_visible():
-                                dia_escolhido.click(force=True)
-                            else:
-                                page.locator("td.md-calendar-date:not(.md-calendar-date-disabled) span").first.click(force=True)
-
-                            time.sleep(1)
-                            self._log(f"[{placa}] Data cravada no calendário com sucesso!")
-                    except Exception:
-                        pass
+                    self._preencher_validade_cnh(page, placa)
+                    self._capturar_qualquer_evento_na_tela(page, placa)
 
                     # 3. COMPOSIÇÃO
                     self._log(f"[{placa}] Selecionando Composição via Teclado...")
@@ -549,6 +632,11 @@ class RoboAtropbot:
                     self._log(f"[{placa}] Cravando CTR Específico da Tabela: {contrato}...")
                     page.mouse.wheel(0, 600)
                     time.sleep(1)
+
+                    # 5.0 DATA DA COTA — a Cota só habilita depois que a data
+                    # da seção Contrato está preenchida.
+                    self._preencher_data_cota(page, placa, data_cota)
+
                     try:
                         campo_cota = page.locator("md-input-container:has(label:has-text('Cota')) input").first
                         if not campo_cota.is_visible():
@@ -739,18 +827,31 @@ class RoboAtropbot:
 
                     if "Sem Composição" in erro_str:
                         self._log(f"ERRO [{placa}]: Composição não abriu.")
-                        self._status_item(item_id, "Erro Composição")
-                        self._maquina.item_atual_id = None
+                        status_erro = "Erro Composição"
                     elif "A data foi corrompida" in erro_str:
                         self._log(f"ERRO [{placa}]: Trizy apagou a data. O sistema não permite confirmar cota.")
-                        self._status_item(item_id, "Erro Data")
-                        self._maquina.item_atual_id = None    
+                        status_erro = "Erro Data"
                     else:
-                        self._log(f"ERRO [{placa}]: Falha inesperada. Pulando para a próxima...")
-                        self._status_item(item_id, "Erro")
-                        self._maquina.item_atual_id = None
+                        self._log(f"ERRO [{placa}]: Falha inesperada.")
+                        status_erro = "Erro"
 
+                    self._maquina.item_atual_id = None
                     self._limpar_painel_apos_erro(page, placa)
+
+                    # Reprocesso automático: se ainda houver tentativa, joga
+                    # o item para o FIM da fila em vez de deixá-lo esquecido.
+                    tentativa_atual = tentativas.get(item_id, 1)
+                    if tentativa_atual < MAX_TENTATIVAS_ITEM:
+                        tentativas[item_id] = tentativa_atual + 1
+                        self._log(f"↻ [{placa}] Reenfileirando para nova tentativa "
+                                  f"({tentativas[item_id]}/{MAX_TENTATIVAS_ITEM}) ao fim da fila.")
+                        self._status_item(item_id, "Aguardando...")
+                        fila_trabalho.append(
+                            (item_id, fs_destino, fazenda, contrato, placa, cpf, "Aguardando...", data_cota)
+                        )
+                    else:
+                        self._log(f"⛔ [{placa}] Esgotou as tentativas — marcado como '{status_erro}'.")
+                        self._status_item(item_id, status_erro)
 
             self._log("--- FILA CONCLUÍDA ---")
             self._log("O navegador permanece aberto para você conferir os agendamentos.")
@@ -762,14 +863,25 @@ class RoboAtropbot:
         finally:
             self._maquina.finalizar()
             self._log_bus.publicar({"tipo": "finalizado"})
-            # IMPORTANTE: a thread do robô termina AQUI, imediatamente —
-            # ela não fica mais bloqueada esperando você fechar o Chrome.
-            # A proteção contra reabrir um segundo navegador disputando o
-            # mesmo perfil (o motivo original dessa trava) já é feita no
-            # servidor, checando sessao_navegador.esta_viva() antes de
-            # iniciar uma nova execução — isso reflete o estado real do
-            # navegador instantaneamente (via context.on('close')), sem
-            # precisar prender esta thread viva até você fechar a janela.
+            # A fila terminou (ou foi cancelada), mas o Chrome fica aberto
+            # para conferência. Mantemos ESTA thread viva, bloqueada no
+            # evento 'close' do Playwright, até você fechar a janela.
+            #
+            # Isso é de propósito: como o Playwright sync só pode ser usado
+            # na thread que o criou, é AQUI (e não no polling do Flask) que
+            # dá para saber, sem custo e sem cross-thread, quando o Chrome
+            # foi fechado — o wait_for_event('close') faz a thread continuar
+            # 'pumpando' os eventos do navegador e vira a flag is_open para
+            # False no instante do fechamento. Enquanto a janela estiver
+            # aberta, o servidor barra um novo Iniciar (esta_viva()==True),
+            # que é exatamente o comportamento desejado ("feche o Chrome
+            # antes de um novo lote") — sem o risco de subir um segundo
+            # Chrome no mesmo perfil e travar em about:blank.
+            try:
+                if sessao.is_open:
+                    sessao.aguardar_fechamento_manual(timeout=0)
+            except Exception:
+                pass
 
 
 def abrir_navegador_manual(maquina, log_bus, sessao):
