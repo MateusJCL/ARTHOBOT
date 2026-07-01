@@ -28,6 +28,13 @@ MAX_TENTATIVAS_ITEM = 2
 STATUS_JA_CONCLUIDOS = ("Sucesso",)
 STATUS_CTR_INVALIDO = "CTR Inválido — Fila Pausada"
 
+# Nomes dos meses em pt-BR (o calendário do Trizy é AngularJS Material e
+# mostra o rótulo do mês nesse formato, ex.: "julho 2026").
+MESES_PT = [
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]
+
 
 class SessaoNavegador:
     def __init__(self, maquina):
@@ -150,10 +157,14 @@ class RoboAtropbot:
         self._log_bus = log_bus
         self._maquina.modo_guiado = modo_guiado
         self._eventos_ja_capturados = set()  # evita registrar o mesmo aviso repetido nesta execução
+        self._page_atual = None  # página em uso — usada pelo HUD "estilo Tesla" na tela
 
     def _log(self, mensagem):
         db.registrar_log_geral(mensagem)
         self._log_bus.publicar({"tipo": "log_geral", "mensagem": mensagem, "hora": time.time()})
+        # Espelha o log no HUD flutuante da própria tela do Trizy (best-effort).
+        if self._page_atual is not None:
+            self._hud(self._page_atual, mensagem)
         item_id = self._maquina.item_atual_id
         if item_id is not None:
             db.registrar_log_item(item_id, mensagem)
@@ -392,68 +403,154 @@ class RoboAtropbot:
             return True
         return data <= datetime.now().date()
 
-    def _preencher_validade_cnh(self, page, placa):
-        """Corrige a 'Data Validade da CNH': se vier vazia ou vencida, apaga
-        e escreve HOJE + CNH_DIAS_BUFFER dias — em vez de deixar o Trizy
-        exibir 'A data de validade deve ser maior que o dia atual' e a fila
-        pausar. Se a data já for futura, não mexe."""
-        alvo = datetime.now().date() + timedelta(days=CNH_DIAS_BUFFER)
+    def _selecionar_data_calendario(self, page, placa, rotulo, alvo, indice="last"):
+        """ESCOLHE uma data clicando no calendário do Trizy (md-datepicker):
+        clica no ícone de calendário -> navega mês a mês até o mês/ano alvo
+        -> clica no dia. É assim que o Trizy registra a data de verdade
+        (apenas digitar não dispara o evento Angular que habilita a Cota).
+
+        `alvo` é um datetime.date. `indice`: 'first' = 1º datepicker da tela
+        (Validade da CNH), 'last' = último (Data da seção Contrato)."""
+        alvo_mes_ano = f"{MESES_PT[alvo.month - 1]} {alvo.year}"
         alvo_str = alvo.strftime("%d/%m/%Y")
+        sel_mes = f"tbody.md-calendar-month:has(td.md-calendar-month-label:text-is('{alvo_mes_ano}'))"
         try:
-            campo = self._achar_input_por_label(
-                page, ["Data Validade da CNH", "Validade da CNH", "Validade CNH"]
-            )
-            if campo is None:
-                self._log(f"[{placa}] Campo 'Data Validade da CNH' não encontrado — seguindo sem alterar.")
-                return
+            datepickers = page.locator("md-datepicker")
+            alvo_dp = datepickers.first if indice == "first" else datepickers.last
+            botao_cal = alvo_dp.locator("button").first
+            self._hud(page, f"{rotulo}: abrindo o calendário…", cor="#3b82f6")
+            self._destacar(page, botao_cal)
+            botao_cal.click(force=True)
+            time.sleep(0.9)
+
+            # Navega até o mês/ano alvo usando as setas do calendário.
+            seta_prox = page.locator(
+                "button.md-calendar-next-month, button[aria-label*='Próximo' i], button[aria-label*='Next' i]"
+            ).first
+            seta_ant = page.locator(
+                "button.md-calendar-previous-month, button[aria-label*='Anterior' i], button[aria-label*='Previous' i]"
+            ).first
+            seta = seta_prox if alvo >= datetime.now().date() else seta_ant
+
+            def _mes_visivel():
+                try:
+                    return page.locator(sel_mes).first.is_visible(timeout=400)
+                except Exception:
+                    return False
+
+            for _ in range(60):
+                if _mes_visivel():
+                    break
+                if seta.count() > 0 and seta.is_visible():
+                    seta.click(force=True)
+                    time.sleep(0.12)
+                else:
+                    break
+
+            # Clica no dia DENTRO do mês alvo (evita pegar o mesmo número de
+            # um mês vizinho num calendário rolável).
+            mes_tbody = page.locator(sel_mes).first
+            escopo = mes_tbody if mes_tbody.count() > 0 else page
+            dia = escopo.locator(
+                "td.md-calendar-date:not(.md-calendar-date-disabled) "
+                f".md-calendar-date-selection-indicator:text-is('{alvo.day}')"
+            ).first
+            self._destacar(page, dia)
+            dia.click(force=True)
+            time.sleep(0.9)
+            self._log(f"[{placa}] {rotulo} escolhida no calendário: {alvo_str}.")
+            return True
+        except Exception as e:
+            self._log(f"[{placa}] Não consegui escolher a {rotulo} no calendário: {str(e)[:140]}")
             try:
-                valor_atual = (campo.input_value(timeout=1000) or "").strip()
+                page.keyboard.press("Escape")  # fecha um popup preso, se houver
+            except Exception:
+                pass
+            return False
+
+    def _preencher_validade_cnh(self, page, placa):
+        """Corrige a 'Data Validade da CNH': se vier vazia ou vencida, escolhe
+        no calendário HOJE + CNH_DIAS_BUFFER dias — em vez de deixar o Trizy
+        exibir 'A data de validade deve ser maior que o dia atual' e pausar a
+        fila. Se a data já for futura, não mexe."""
+        alvo = datetime.now().date() + timedelta(days=CNH_DIAS_BUFFER)
+        try:
+            valor_atual = ""
+            try:
+                valor_atual = (page.locator("md-datepicker input").first.input_value(timeout=1000) or "").strip()
             except Exception:
                 valor_atual = ""
             if not self._data_vencida_ou_vazia(valor_atual):
                 self._log(f"[{placa}] Validade da CNH já é futura ({valor_atual}). Mantendo.")
                 return
-            self._log(f"[{placa}] Validade da CNH vazia/vencida ({valor_atual or 'vazia'}). Ajustando para {alvo_str}.")
-            campo.click(force=True)
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Backspace")
-            campo.type(alvo_str, delay=60)
-            page.keyboard.press("Tab")
-            time.sleep(0.5)
+            self._log(
+                f"[{placa}] Validade da CNH vazia/vencida ({valor_atual or 'vazia'}). "
+                f"Ajustando para {alvo.strftime('%d/%m/%Y')} pelo calendário."
+            )
+            self._selecionar_data_calendario(page, placa, "Validade da CNH", alvo, indice="first")
         except Exception as e:
             self._log(f"[{placa}] Não consegui ajustar a Validade da CNH automaticamente: {str(e)[:120]}")
 
     def _preencher_data_cota(self, page, placa, data_cota):
-        """Preenche o campo de DATA da seção 'Contrato' (a Data da Cota)
+        """Escolhe a DATA da seção 'Contrato' (a Data da Cota) no calendário
         antes de selecionar a Cota — o Trizy só habilita a Cota depois que
         essa data está preenchida ('Para selecionar uma cota, é obrigatório
-        preencher a data primeiro'). `data_cota` vem no formato dd/mm/aaaa."""
+        preencher a data primeiro'), e só registra de verdade quando a data é
+        clicada no calendário. `data_cota` vem no formato dd/mm/aaaa."""
         data_cota = (data_cota or "").strip()
         if not data_cota:
             self._log(f"[{placa}] Sem Data da Cota definida para este item — pulando o preenchimento da data.")
             return
         try:
-            campo = self._achar_input_por_label(page, ["Cota", "Contrato"])
-            # A busca acima pode acabar pegando o próprio input da Cota; por
-            # isso preferimos o input do datepicker da seção Contrato.
-            try:
-                dp = page.locator("md-datepicker input").last
-                if dp.count() > 0 and dp.is_visible(timeout=800):
-                    campo = dp
-            except Exception:
-                pass
-            if campo is None:
-                self._log(f"[{placa}] Campo de Data da Cota não encontrado — seguindo (a Cota pode falhar).")
-                return
-            self._log(f"[{placa}] Preenchendo Data da Cota: {data_cota}...")
-            campo.click(force=True)
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Backspace")
-            campo.type(data_cota, delay=60)
-            page.keyboard.press("Tab")
-            time.sleep(1)
-        except Exception as e:
-            self._log(f"[{placa}] Não consegui preencher a Data da Cota: {str(e)[:120]}")
+            alvo = datetime.strptime(data_cota, "%d/%m/%Y").date()
+        except Exception:
+            self._log(f"[{placa}] Data da Cota em formato inesperado ('{data_cota}') — esperado dd/mm/aaaa.")
+            return
+        self._selecionar_data_calendario(page, placa, "Data da Cota", alvo, indice="last")
+
+    def _hud(self, page, texto, cor="#22c55e"):
+        """Mostra/atualiza um painel flutuante NA TELA do Trizy com o passo
+        atual do robô ("estilo Tesla"): dá pra acompanhar visualmente e os
+        prints de erro já saem auto-explicativos. Nunca lança — é só um extra
+        e a página pode estar navegando/sem contexto."""
+        try:
+            page.evaluate(
+                """([msg, cor]) => {
+                    let el = document.getElementById('atropbot-hud');
+                    if (!el) {
+                        el = document.createElement('div');
+                        el.id = 'atropbot-hud';
+                        document.body.appendChild(el);
+                    }
+                    el.style.cssText = 'position:fixed;z-index:2147483647;bottom:16px;right:16px;'
+                        + 'max-width:380px;background:rgba(15,23,42,.93);color:#fff;padding:12px 14px;'
+                        + 'border-radius:10px;font:600 13px/1.45 Inter,Segoe UI,system-ui,sans-serif;'
+                        + 'box-shadow:0 8px 28px rgba(0,0,0,.4);border-left:4px solid ' + cor + ';'
+                        + 'pointer-events:none;white-space:pre-wrap;';
+                    el.innerHTML = '<div style="opacity:.65;font-size:10px;letter-spacing:.1em;'
+                        + 'text-transform:uppercase;margin-bottom:4px">ATROPBOT</div>'
+                        + String(msg).replace(/</g,'&lt;');
+                }""",
+                [texto, cor],
+            )
+        except Exception:
+            pass
+
+    def _destacar(self, page, locator):
+        """Desenha um contorno vermelho temporário no elemento que o robô vai
+        usar, para dar pra ver/printar o alvo de cada ação. Best-effort."""
+        try:
+            locator.scroll_into_view_if_needed(timeout=1500)
+            locator.evaluate(
+                """(el) => {
+                    const anterior = el.style.outline;
+                    el.style.outline = '3px solid #ef4444';
+                    el.style.outlineOffset = '2px';
+                    setTimeout(() => { el.style.outline = anterior; }, 1200);
+                }"""
+            )
+        except Exception:
+            pass
 
     def executar(self, itens_fila, sessao):
         self._log("--- INICIANDO ATROPBOT ---")
@@ -462,6 +559,7 @@ class RoboAtropbot:
         try:
             self._log("Abrindo novo navegador...")
             page = sessao.abrir()
+            self._page_atual = page
             self._log("Acessando a plataforma...")
             page.goto(URL_PAINEL)
 
@@ -502,6 +600,7 @@ class RoboAtropbot:
                 
                 if sessao.esta_viva():
                     page = sessao.page
+                    self._page_atual = page
                 if status in STATUS_JA_CONCLUIDOS:
                     continue
 
@@ -727,6 +826,7 @@ class RoboAtropbot:
                     self._log(f"[{placa}] Aguardando botão AGENDAR...")
                     botao_agendar_final = page.locator("button:has-text('AGENDAR')").last
                     botao_agendar_final.scroll_into_view_if_needed()
+                    self._destacar(page, botao_agendar_final)
                     botao_agendar_final.click(timeout=45000, force=True)
 
                     if page.locator("text='Utilize o botão ADICIONAR COTA'").is_visible(timeout=2500):
@@ -769,9 +869,11 @@ class RoboAtropbot:
                         if not sessao.esta_viva():
                             self._log("Reabrindo o navegador...")
                             page = sessao.abrir()
+                            self._page_atual = page
                             page.goto(URL_PAINEL)
                         else:
                             page = sessao.page
+                            self._page_atual = page
                         continue
 
                     # Registra TUDO que está na tela neste momento de
