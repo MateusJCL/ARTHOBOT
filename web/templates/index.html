@@ -6,7 +6,7 @@
 <title>ATROPBOT — Orquestrador Logístico</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/app.css?v=4">
+<link rel="stylesheet" href="/static/app.css?v=5">
 </head>
 <body>
 
@@ -44,6 +44,7 @@
       <span class="lote-dado">Terminal: <strong id="lote-terminal">—</strong></span>
       <span class="lote-dado">Fazenda: <strong id="lote-fazenda">—</strong></span>
       <span class="lote-dado">Contrato: <strong id="lote-contrato">—</strong></span>
+      <span class="lote-dado">Data da Cota: <strong id="lote-data">—</strong></span>
     </div>
 
     <section class="aba" id="aba-operacao">
@@ -70,6 +71,10 @@
             <div class="campo campo-md">
               <label for="lote-contrato-input">Contrato (CTR)</label>
               <input type="text" id="lote-contrato-input" autocomplete="off" placeholder="vem da fazenda, ou digite">
+            </div>
+            <div class="campo campo-sm">
+              <label for="lote-data-input">Data da Cota</label>
+              <input type="date" id="lote-data-input" autocomplete="off">
             </div>
             <div class="campo campo-acoes">
               <button type="button" class="btn btn-ghost" id="btn-limpar-lote">Limpar Lote</button>
@@ -119,7 +124,7 @@
                 <thead>
                   <tr>
                     <th class="th-check"><input type="checkbox" id="check-todos-fila"></th>
-                    <th>Terminal</th><th>Fazenda</th><th>Contrato</th><th>Placa</th><th>CPF</th><th>Status</th>
+                    <th>Terminal</th><th>Fazenda</th><th>Contrato</th><th>Data</th><th>Placa</th><th>CPF</th><th>Status</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -360,6 +365,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>

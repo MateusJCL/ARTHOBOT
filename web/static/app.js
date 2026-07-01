@@ -402,22 +402,35 @@ function configurarNavegadorManual() {
 }
 
 // ===================== BLOCO: OPERAÇÃO =====================
+// Converte o valor do <input type="date"> (aaaa-mm-dd) para dd/mm/aaaa,
+// que é o formato que o Trizy espera. Vazio vira "".
+function dataParaBR(valorISO) {
+  if (!valorISO) return "";
+  const partes = valorISO.split("-");
+  if (partes.length !== 3) return valorISO;
+  return `${partes[2]}/${partes[1]}/${partes[0]}`;
+}
+
 function lerLote() {
   const cT = document.getElementById("lote-terminal-input");
+  const cD = document.getElementById("lote-data-input");
   return {
     terminal: cT ? cT.value.trim().toUpperCase() : "",
     fazenda: document.getElementById("lote-fazenda-input") ? document.getElementById("lote-fazenda-input").value.trim().toUpperCase() : "",
     contrato: document.getElementById("lote-contrato-input") ? document.getElementById("lote-contrato-input").value.trim().toUpperCase() : "",
+    data_cota: cD ? dataParaBR(cD.value.trim()) : "",
   };
 }
 
 function atualizarBadgeLote() {
-  const { terminal, fazenda, contrato } = lerLote();
+  const { terminal, fazenda, contrato, data_cota } = lerLote();
   const lbTerm = document.getElementById("lote-terminal");
   if(lbTerm) {
       lbTerm.textContent = terminal || "—";
       document.getElementById("lote-fazenda").textContent = fazenda || "—";
       document.getElementById("lote-contrato").textContent = contrato || "—";
+      const lbData = document.getElementById("lote-data");
+      if (lbData) lbData.textContent = data_cota || "—";
   }
 }
 
@@ -439,10 +452,12 @@ function configurarLote() {
   const campoTerminal = document.getElementById("lote-terminal-input");
   const campoFazenda = document.getElementById("lote-fazenda-input");
   const campoContrato = document.getElementById("lote-contrato-input");
+  const campoData = document.getElementById("lote-data-input");
 
   if(!campoTerminal) return;
 
   campoTerminal.addEventListener("change", atualizarBadgeLote);
+  if (campoData) campoData.addEventListener("change", atualizarBadgeLote);
 
   ligarAutocomplete(campoFazenda, { tabela: "fazendas", coluna: "nome" }, (valor) => {
     atualizarBadgeLote();
@@ -458,6 +473,7 @@ function configurarLote() {
       campoTerminal.value = "";
       campoFazenda.value = "";
       campoContrato.value = "";
+      if (campoData) campoData.value = "";
       atualizarBadgeLote();
       const lg = document.getElementById("log-geral");
       if(lg) lg.textContent = "";
@@ -490,7 +506,7 @@ async function carregarFila() {
 
   tbody.innerHTML = "";
   if (lista.length === 0) {
-    tbody.innerHTML = `<tr class="tabela-vazia"><td colspan="7">Fila vazia — adicione veículos acima.</td></tr>`;
+    tbody.innerHTML = `<tr class="tabela-vazia"><td colspan="8">Fila vazia — adicione veículos acima.</td></tr>`;
     return;
   }
 
@@ -504,7 +520,7 @@ async function carregarFila() {
     if (ultimoIndiceLote !== null && item.indice_lote !== ultimoIndiceLote) {
       const trSep = document.createElement("tr");
       trSep.className = "fila-separador-lote";
-      trSep.innerHTML = `<td colspan="7"><span class="separador-lote-texto">▾ Troca de lote: ${item.terminal} · ${item.fazenda} · CTR ${item.contrato}</span></td>`;
+      trSep.innerHTML = `<td colspan="8"><span class="separador-lote-texto">▾ Troca de lote: ${item.terminal} · ${item.fazenda} · CTR ${item.contrato}</span></td>`;
       tbody.appendChild(trSep);
     }
     ultimoIndiceLote = item.indice_lote;
@@ -519,6 +535,7 @@ async function carregarFila() {
     tr.innerHTML = `
       <td><input type="checkbox" class="check-fila" value="${item.id}" ${isChecked}></td>
       <td>${item.terminal}</td><td>${item.fazenda}</td><td>${item.contrato}</td>
+      <td>${item.data_cota || "—"}</td>
       <td>${item.placa}</td><td>${item.cpf}</td>
       <td><span class="status-pill ${classeStatus(item.status)}">${item.status}</span></td>`;
     tr.addEventListener("dblclick", () => abrirLogItem(item.id, item.placa));
@@ -614,12 +631,12 @@ function configurarAdicionarFila() {
 
   formFila.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const { terminal, fazenda, contrato } = lerLote();
+    const { terminal, fazenda, contrato, data_cota } = lerLote();
     const placa = campoPlaca.value.trim().toUpperCase();
     const cpf = campoCpf.value.trim();
 
     try {
-      await api("POST", "/api/fila", { terminal, fazenda, contrato, placa, cpf });
+      await api("POST", "/api/fila", { terminal, fazenda, contrato, placa, cpf, data_cota });
       toast(`${placa} adicionado!`);
       campoPlaca.value = "";
       campoCpf.value = "";

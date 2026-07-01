@@ -166,8 +166,9 @@ def api_listar_contratos_todos():
 def api_listar_fila():
     rows = db.listar_fila_com_indice_lote()
     return jsonify([
-        {"id": i, "terminal": t, "fazenda": f, "contrato": c, "placa": p, "cpf": cpf, "status": s, "indice_lote": idx}
-        for i, t, f, c, p, cpf, s, idx in rows
+        {"id": i, "terminal": t, "fazenda": f, "contrato": c, "placa": p, "cpf": cpf,
+         "status": s, "data_cota": dt, "indice_lote": idx}
+        for i, t, f, c, p, cpf, s, dt, idx in rows
     ])
 
 @app.route("/api/fila", methods=["POST"])
@@ -178,6 +179,7 @@ def api_adicionar_fila():
     contrato = (dados.get("contrato") or "").strip().upper()
     placa = (dados.get("placa") or "").strip().upper()
     cpf = (dados.get("cpf") or "").strip()
+    data_cota = (dados.get("data_cota") or "").strip()
 
     if not all([terminal, fazenda, contrato]):
         return jsonify({"erro": "Preencha os dados do Lote (Terminal, Fazenda e CTR) antes de adicionar veículos."}), 400
@@ -185,7 +187,7 @@ def api_adicionar_fila():
         return jsonify({"erro": "Preencha CPF e Placa."}), 400
 
     db.salvar_vinculo_fazenda_contrato(fazenda, contrato)
-    item_id = db.adicionar_item_fila(terminal, fazenda, contrato, placa, cpf)
+    item_id = db.adicionar_item_fila(terminal, fazenda, contrato, placa, cpf, data_cota=data_cota)
     # Reorganiza automaticamente: agrupa por Terminal/Fazenda/Contrato,
     # para o robô trocar de lote o mínimo de vezes possível ao processar.
     db.reorganizar_fila_por_lote()
@@ -273,9 +275,9 @@ def api_reprocessar_erros():
         return jsonify({"erro": "Não há itens com erro na fila para reprocessar."}), 400
 
     itens_para_reprocessar = []
-    for item_id, terminal, fazenda, contrato, placa, cpf, status in itens_com_erro:
+    for item_id, terminal, fazenda, contrato, placa, cpf, status, data_cota in itens_com_erro:
         db.atualizar_status_item(item_id, "Aguardando...")
-        itens_para_reprocessar.append((item_id, terminal, fazenda, contrato, placa, cpf, "Aguardando..."))
+        itens_para_reprocessar.append((item_id, terminal, fazenda, contrato, placa, cpf, "Aguardando...", data_cota))
 
     db.registrar_log_geral(f"Reprocessando {len(itens_para_reprocessar)} item(ns) com erro...")
     _disparar_robo(itens_para_reprocessar, modo_guiado)
@@ -296,13 +298,13 @@ def api_reprocessar_item():
     row = db.buscar_item_fila(item_id)
     if row is None:
         return jsonify({"erro": "Item não encontrado na fila."}), 404
-    _, terminal, fazenda, contrato, placa, cpf, status = row
+    _, terminal, fazenda, contrato, placa, cpf, status, data_cota = row
     if status == "Sucesso":
         return jsonify({"erro": f"O veículo {placa} já está com status Sucesso."}), 400
 
     db.atualizar_status_item(item_id, "Aguardando...")
     db.registrar_log_geral(f"Reprocessando individualmente: {placa}...")
-    _disparar_robo([(item_id, terminal, fazenda, contrato, placa, cpf, "Aguardando...")], modo_guiado)
+    _disparar_robo([(item_id, terminal, fazenda, contrato, placa, cpf, "Aguardando...", data_cota)], modo_guiado)
     return jsonify({"ok": True})
 
 @app.route("/api/robo/pausar", methods=["POST"])
