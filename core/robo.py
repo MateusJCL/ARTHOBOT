@@ -35,6 +35,101 @@ MESES_PT = [
     "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 ]
 
+# ------------------------------------------------------------------
+# "Modo Tesla": overlay injetado na própria página do Trizy. Mostra um
+# cursor que se desloca até o alvo, um rastro (linha) ligando os pontos,
+# um anel pulsando onde ele vai clicar e um balão de "pensamento" com a
+# ação atual, além do painel de status no canto. Tudo é pointer-events:
+# none (não atrapalha o robô) e vive numa camada z-index máxima.
+# ------------------------------------------------------------------
+TESLA_ENGINE_JS = r"""
+(function () {
+  if (window.__ATROPBOT) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  const st = document.createElement('style');
+  st.textContent = `
+    #atropbot-layer{position:fixed;inset:0;z-index:2147483646;pointer-events:none;overflow:hidden;font-family:Inter,Segoe UI,system-ui,sans-serif}
+    #atropbot-cursor{position:fixed;left:0;top:0;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;
+      background:radial-gradient(circle at 35% 35%,#bae6fd,#2563eb 72%);
+      box-shadow:0 0 16px 5px rgba(56,189,248,.85),0 0 46px 12px rgba(37,99,235,.35);
+      transition:left .6s cubic-bezier(.5,.05,.2,1),top .6s cubic-bezier(.5,.05,.2,1);will-change:left,top}
+    #atropbot-cursor::after{content:'';position:absolute;inset:-9px;border-radius:50%;border:2px solid rgba(56,189,248,.6);
+      animation:atrop-pulse 1.4s ease-out infinite}
+    @keyframes atrop-pulse{0%{transform:scale(.55);opacity:.9}100%{transform:scale(1.9);opacity:0}}
+    #atropbot-thought{position:fixed;left:0;top:0;transform:translate(18px,-40px);
+      transition:left .6s cubic-bezier(.5,.05,.2,1),top .6s cubic-bezier(.5,.05,.2,1);
+      background:rgba(15,23,42,.94);color:#e0f2fe;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:700;
+      white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,.45);border:1px solid rgba(56,189,248,.55)}
+    .atrop-ring{position:fixed;width:46px;height:46px;margin:-23px 0 0 -23px;border-radius:50%;border:3px solid #38bdf8;
+      box-shadow:0 0 14px rgba(56,189,248,.9);animation:atrop-ring 1s ease-out forwards;pointer-events:none}
+    @keyframes atrop-ring{0%{transform:scale(.3);opacity:1}100%{transform:scale(1.5);opacity:0}}
+    .atrop-ripple{position:fixed;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:rgba(239,68,68,.55);
+      pointer-events:none;animation:atrop-ripple .6s ease-out forwards}
+    @keyframes atrop-ripple{0%{transform:scale(.2);opacity:.9}100%{transform:scale(3.2);opacity:0}}
+    #atropbot-hud{position:fixed;bottom:18px;right:18px;max-width:400px;background:rgba(15,23,42,.94);color:#fff;
+      padding:14px 16px;border-radius:12px;font:600 13px/1.5 Inter,Segoe UI,system-ui,sans-serif;
+      box-shadow:0 10px 34px rgba(0,0,0,.5);border-left:4px solid #22c55e;z-index:2147483647;pointer-events:none;white-space:pre-wrap}
+    #atropbot-hud .atrop-tag{display:flex;align-items:center;gap:7px;opacity:.75;font-size:10px;letter-spacing:.14em;
+      text-transform:uppercase;margin-bottom:5px}
+    #atropbot-hud .atrop-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;animation:atrop-blink 1s infinite}
+    @keyframes atrop-blink{50%{opacity:.25}}
+  `;
+  (document.head || document.documentElement).appendChild(st);
+
+  const layer = document.createElement('div'); layer.id = 'atropbot-layer';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('style', 'position:absolute;inset:0;width:100%;height:100%');
+  layer.appendChild(svg);
+  const cursor = document.createElement('div'); cursor.id = 'atropbot-cursor';
+  const thought = document.createElement('div'); thought.id = 'atropbot-thought'; thought.style.display = 'none';
+  layer.appendChild(cursor); layer.appendChild(thought);
+  (document.body || document.documentElement).appendChild(layer);
+
+  let px = window.innerWidth / 2, py = window.innerHeight - 90;
+  cursor.style.left = px + 'px'; cursor.style.top = py + 'px';
+
+  const A = {
+    _pos: { x: px, y: py },
+    status: function (msg, cor) {
+      let h = document.getElementById('atropbot-hud');
+      if (!h) { h = document.createElement('div'); h.id = 'atropbot-hud'; document.body.appendChild(h); }
+      cor = cor || '#22c55e';
+      h.style.borderLeftColor = cor;
+      h.innerHTML = '<div class="atrop-tag"><span class="atrop-dot" style="background:' + cor +
+        ';box-shadow:0 0 8px ' + cor + '"></span>ATROPBOT</div>' + String(msg).replace(/</g, '&lt;');
+    },
+    moveTo: function (x, y, label, cor) {
+      cor = cor || '#38bdf8';
+      const line = document.createElementNS(NS, 'line');
+      line.setAttribute('x1', this._pos.x); line.setAttribute('y1', this._pos.y);
+      line.setAttribute('x2', x); line.setAttribute('y2', y);
+      line.setAttribute('stroke', cor); line.setAttribute('stroke-width', '2.5');
+      line.setAttribute('stroke-linecap', 'round'); line.setAttribute('stroke-dasharray', '9 7');
+      line.style.filter = 'drop-shadow(0 0 5px ' + cor + ')';
+      svg.appendChild(line);
+      line.animate([{ opacity: .95 }, { opacity: 0 }], { duration: 1300, easing: 'ease-out' })
+        .onfinish = () => line.remove();
+      cursor.style.left = x + 'px'; cursor.style.top = y + 'px';
+      cursor.style.borderColor = cor;
+      if (label) { thought.style.display = 'block'; thought.textContent = label; thought.style.borderColor = cor; }
+      thought.style.left = x + 'px'; thought.style.top = y + 'px';
+      this._pos = { x: x, y: y };
+      setTimeout(() => {
+        const r = document.createElement('div'); r.className = 'atrop-ring';
+        r.style.left = x + 'px'; r.style.top = y + 'px'; r.style.borderColor = cor;
+        layer.appendChild(r); setTimeout(() => r.remove(), 1000);
+      }, 560);
+    },
+    ripple: function (x, y) {
+      const r = document.createElement('div'); r.className = 'atrop-ripple';
+      r.style.left = x + 'px'; r.style.top = y + 'px';
+      layer.appendChild(r); setTimeout(() => r.remove(), 600);
+    }
+  };
+  window.__ATROPBOT = A;
+})();
+"""
+
 
 class SessaoNavegador:
     def __init__(self, maquina):
@@ -403,25 +498,87 @@ class RoboAtropbot:
             return True
         return data <= datetime.now().date()
 
-    def _selecionar_data_calendario(self, page, placa, rotulo, alvo, indice="last"):
-        """ESCOLHE uma data clicando no calendário do Trizy (md-datepicker):
-        clica no ícone de calendário -> navega mês a mês até o mês/ano alvo
-        -> clica no dia. É assim que o Trizy registra a data de verdade
-        (apenas digitar não dispara o evento Angular que habilita a Cota).
+    def _datepicker_cnh(self, page):
+        """Localiza o md-datepicker da 'Validade da CNH' (o campo 'Insira uma
+        data' no bloco da CNH)."""
+        tentativas = [
+            "md-datepicker:has(input[placeholder*='Insira uma data' i])",
+            "xpath=(//*[contains(normalize-space(.),'CNH')]/following::md-datepicker)[1]",
+        ]
+        for sel in tentativas:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:
+                continue
+        return page.locator("md-datepicker").first
 
-        `alvo` é um datetime.date. `indice`: 'first' = 1º datepicker da tela
-        (Validade da CNH), 'last' = último (Data da seção Contrato)."""
+    def _datepicker_contrato(self, page):
+        """Localiza o md-datepicker da seção 'Contrato' (a Data da Cota) — o
+        que fica logo abaixo do título 'Contrato' e antes do campo 'Cota'.
+        Antes usávamos `.last`, que às vezes pegava outro datepicker da tela."""
+        tentativas = [
+            "xpath=(//*[normalize-space(text())='Contrato']/following::md-datepicker)[1]",
+            "xpath=(//md-datepicker[following::*[contains(normalize-space(.),'Fração de cota')]])[last()]",
+            "xpath=(//md-datepicker[following::*[contains(normalize-space(.),'Cota')]])[last()]",
+        ]
+        for sel in tentativas:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:
+                continue
+        return page.locator("md-datepicker").last
+
+    def _calendario_aberto(self, page):
+        try:
+            return page.locator(
+                "md-calendar, .md-datepicker-calendar-pane, tbody.md-calendar-month, td.md-calendar-date"
+            ).first.is_visible(timeout=800)
+        except Exception:
+            return False
+
+    def _abrir_datepicker(self, page, placa, rotulo, datepicker):
+        """Abre o calendário de um md-datepicker tentando vários gatilhos
+        (o ícone de calendário, o container do input, o próprio input...),
+        porque dependendo do campo o clique cai em elementos diferentes."""
+        candidatos = [
+            datepicker.locator("button.md-datepicker-button"),
+            datepicker.locator(".md-datepicker-button"),
+            datepicker.locator("md-icon"),
+            datepicker.locator(".md-datepicker-input-container"),
+            datepicker.locator("button"),
+            datepicker.locator("input"),
+        ]
+        for cand in candidatos:
+            try:
+                el = cand.first
+                if el.count() == 0 or not el.is_visible():
+                    continue
+                self._apontar(page, el, f"{rotulo}: abrir calendário", cor="#3b82f6")
+                el.click(force=True)
+                time.sleep(0.7)
+                if self._calendario_aberto(page):
+                    return True
+            except Exception:
+                continue
+        return self._calendario_aberto(page)
+
+    def _selecionar_data_calendario(self, page, placa, rotulo, alvo, datepicker):
+        """ESCOLHE uma data clicando no calendário do Trizy (md-datepicker):
+        abre o calendário -> navega mês a mês até o mês/ano alvo -> clica no
+        dia. É assim que o Trizy registra a data de verdade (apenas digitar
+        não dispara o evento Angular que habilita a Cota)."""
         alvo_mes_ano = f"{MESES_PT[alvo.month - 1]} {alvo.year}"
         alvo_str = alvo.strftime("%d/%m/%Y")
         sel_mes = f"tbody.md-calendar-month:has(td.md-calendar-month-label:text-is('{alvo_mes_ano}'))"
         try:
-            datepickers = page.locator("md-datepicker")
-            alvo_dp = datepickers.first if indice == "first" else datepickers.last
-            botao_cal = alvo_dp.locator("button").first
             self._hud(page, f"{rotulo}: abrindo o calendário…", cor="#3b82f6")
-            self._destacar(page, botao_cal)
-            botao_cal.click(force=True)
-            time.sleep(0.9)
+            if not self._abrir_datepicker(page, placa, rotulo, datepicker):
+                self._log(f"[{placa}] Não consegui ABRIR o calendário da {rotulo} — o clique no ícone não abriu o popup.")
+                return False
 
             # Navega até o mês/ano alvo usando as setas do calendário.
             seta_prox = page.locator(
@@ -455,7 +612,7 @@ class RoboAtropbot:
                 "td.md-calendar-date:not(.md-calendar-date-disabled) "
                 f".md-calendar-date-selection-indicator:text-is('{alvo.day}')"
             ).first
-            self._destacar(page, dia)
+            self._apontar(page, dia, f"{rotulo}: dia {alvo.day}", cor="#22c55e")
             dia.click(force=True)
             time.sleep(0.9)
             self._log(f"[{placa}] {rotulo} escolhida no calendário: {alvo_str}.")
@@ -475,9 +632,10 @@ class RoboAtropbot:
         fila. Se a data já for futura, não mexe."""
         alvo = datetime.now().date() + timedelta(days=CNH_DIAS_BUFFER)
         try:
+            datepicker = self._datepicker_cnh(page)
             valor_atual = ""
             try:
-                valor_atual = (page.locator("md-datepicker input").first.input_value(timeout=1000) or "").strip()
+                valor_atual = (datepicker.locator("input").first.input_value(timeout=1000) or "").strip()
             except Exception:
                 valor_atual = ""
             if not self._data_vencida_ou_vazia(valor_atual):
@@ -487,7 +645,7 @@ class RoboAtropbot:
                 f"[{placa}] Validade da CNH vazia/vencida ({valor_atual or 'vazia'}). "
                 f"Ajustando para {alvo.strftime('%d/%m/%Y')} pelo calendário."
             )
-            self._selecionar_data_calendario(page, placa, "Validade da CNH", alvo, indice="first")
+            self._selecionar_data_calendario(page, placa, "Validade da CNH", alvo, datepicker)
         except Exception as e:
             self._log(f"[{placa}] Não consegui ajustar a Validade da CNH automaticamente: {str(e)[:120]}")
 
@@ -506,45 +664,66 @@ class RoboAtropbot:
         except Exception:
             self._log(f"[{placa}] Data da Cota em formato inesperado ('{data_cota}') — esperado dd/mm/aaaa.")
             return
-        self._selecionar_data_calendario(page, placa, "Data da Cota", alvo, indice="last")
+        datepicker = self._datepicker_contrato(page)
+        self._selecionar_data_calendario(page, placa, "Data da Cota", alvo, datepicker)
+
+    def _garantir_tesla(self, page):
+        """Garante que o motor do overlay 'Tesla' está injetado na página."""
+        try:
+            if not page.evaluate("() => !!window.__ATROPBOT"):
+                page.evaluate(TESLA_ENGINE_JS)
+        except Exception:
+            pass
 
     def _hud(self, page, texto, cor="#22c55e"):
-        """Mostra/atualiza um painel flutuante NA TELA do Trizy com o passo
-        atual do robô ("estilo Tesla"): dá pra acompanhar visualmente e os
-        prints de erro já saem auto-explicativos. Nunca lança — é só um extra
-        e a página pode estar navegando/sem contexto."""
+        """Atualiza o painel de status do overlay 'Tesla' na tela do Trizy.
+        Best-effort — a página pode estar navegando/sem contexto."""
         try:
+            self._garantir_tesla(page)
             page.evaluate(
-                """([msg, cor]) => {
-                    let el = document.getElementById('atropbot-hud');
-                    if (!el) {
-                        el = document.createElement('div');
-                        el.id = 'atropbot-hud';
-                        document.body.appendChild(el);
-                    }
-                    el.style.cssText = 'position:fixed;z-index:2147483647;bottom:16px;right:16px;'
-                        + 'max-width:380px;background:rgba(15,23,42,.93);color:#fff;padding:12px 14px;'
-                        + 'border-radius:10px;font:600 13px/1.45 Inter,Segoe UI,system-ui,sans-serif;'
-                        + 'box-shadow:0 8px 28px rgba(0,0,0,.4);border-left:4px solid ' + cor + ';'
-                        + 'pointer-events:none;white-space:pre-wrap;';
-                    el.innerHTML = '<div style="opacity:.65;font-size:10px;letter-spacing:.1em;'
-                        + 'text-transform:uppercase;margin-bottom:4px">ATROPBOT</div>'
-                        + String(msg).replace(/</g,'&lt;');
-                }""",
+                "([m, c]) => { if (window.__ATROPBOT) window.__ATROPBOT.status(m, c); }",
                 [texto, cor],
             )
         except Exception:
             pass
 
-    def _destacar(self, page, locator):
-        """Desenha um contorno vermelho temporário no elemento que o robô vai
-        usar, para dar pra ver/printar o alvo de cada ação. Best-effort."""
+    def _apontar(self, page, locator, label="", cor="#38bdf8"):
+        """"Mira" no elemento: leva o cursor do overlay até ele (com rastro),
+        mostra o balão de ação e pulsa um anel onde vai clicar — depois
+        contorna o elemento. É só visual (best-effort)."""
         try:
             locator.scroll_into_view_if_needed(timeout=1500)
+        except Exception:
+            pass
+        self._garantir_tesla(page)
+        try:
+            box = locator.bounding_box()
+        except Exception:
+            box = None
+        if box:
+            cx = box["x"] + box["width"] / 2
+            cy = box["y"] + box["height"] / 2
+            try:
+                page.evaluate(
+                    "([x, y, l, c]) => { if (window.__ATROPBOT) window.__ATROPBOT.moveTo(x, y, l, c); }",
+                    [cx, cy, label, cor],
+                )
+                time.sleep(0.7)  # deixa o cursor "andar" até o alvo antes do clique
+                page.evaluate(
+                    "([x, y]) => { if (window.__ATROPBOT) window.__ATROPBOT.ripple(x, y); }",
+                    [cx, cy],
+                )
+            except Exception:
+                pass
+        self._destacar(page, locator)
+
+    def _destacar(self, page, locator):
+        """Desenha um contorno temporário no elemento que o robô vai usar."""
+        try:
             locator.evaluate(
                 """(el) => {
                     const anterior = el.style.outline;
-                    el.style.outline = '3px solid #ef4444';
+                    el.style.outline = '3px solid #38bdf8';
                     el.style.outlineOffset = '2px';
                     setTimeout(() => { el.style.outline = anterior; }, 1200);
                 }"""
@@ -661,7 +840,9 @@ class RoboAtropbot:
                     self._capturar_qualquer_evento_na_tela(page, placa)
                     self._checkpoint("terminal", f"Terminal {fs_destino} confirmado. Próximo passo: abrir Agendamento.")
 
-                    page.get_by_role("button", name="AGENDAR").click()
+                    btn_agendar = page.get_by_role("button", name="AGENDAR").first
+                    self._apontar(page, btn_agendar, "Abrir Novo Agendamento", cor="#3b82f6")
+                    btn_agendar.click()
                     page.wait_for_selector("text='Novo Agendamento'")
                     time.sleep(1)
 
@@ -752,6 +933,7 @@ class RoboAtropbot:
                         popup_cota = page.locator("text=Contrato #").filter(has_text=contrato).first
                         popup_cota.wait_for(state="visible", timeout=8000)
                         time.sleep(1.5)
+                        self._apontar(page, popup_cota, "Selecionar Cota/CTR", cor="#22c55e")
                         popup_cota.click()
                     except Exception:
                         raise Exception(f"Sem CTR ({contrato}) no painel.")
@@ -826,7 +1008,7 @@ class RoboAtropbot:
                     self._log(f"[{placa}] Aguardando botão AGENDAR...")
                     botao_agendar_final = page.locator("button:has-text('AGENDAR')").last
                     botao_agendar_final.scroll_into_view_if_needed()
-                    self._destacar(page, botao_agendar_final)
+                    self._apontar(page, botao_agendar_final, "Clicar em AGENDAR", cor="#22c55e")
                     botao_agendar_final.click(timeout=45000, force=True)
 
                     if page.locator("text='Utilize o botão ADICIONAR COTA'").is_visible(timeout=2500):
