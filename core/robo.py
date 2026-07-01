@@ -73,6 +73,25 @@ TESLA_ENGINE_JS = r"""
       text-transform:uppercase;margin-bottom:5px}
     #atropbot-hud .atrop-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;animation:atrop-blink 1s infinite}
     @keyframes atrop-blink{50%{opacity:.25}}
+    #atropbot-console{position:fixed;top:14px;left:14px;width:430px;max-width:44vw;max-height:52vh;display:flex;flex-direction:column;
+      background:rgba(2,6,23,.92);color:#e2e8f0;border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.55);
+      border:1px solid rgba(56,189,248,.35);z-index:2147483647;pointer-events:auto;overflow:hidden;
+      font:500 12px/1.5 'JetBrains Mono',Consolas,Menlo,monospace}
+    #atropbot-console .atrop-chead{display:flex;align-items:center;gap:8px;padding:9px 12px;background:rgba(15,23,42,.95);
+      border-bottom:1px solid rgba(56,189,248,.25);font-weight:700;letter-spacing:.12em;font-size:10px;text-transform:uppercase;color:#7dd3fc}
+    #atropbot-console .atrop-cdot{width:8px;height:8px;border-radius:50%;background:#38bdf8;box-shadow:0 0 8px #38bdf8;animation:atrop-blink 1s infinite}
+    #atropbot-console .atrop-ccount{margin-left:auto;color:#64748b;font-weight:600;letter-spacing:normal}
+    #atropbot-console .atrop-cbody{overflow-y:auto;padding:8px 10px;scrollbar-width:thin;scrollbar-color:#334155 transparent}
+    #atropbot-console .atrop-cbody::-webkit-scrollbar{width:8px}
+    #atropbot-console .atrop-cbody::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+    #atropbot-console .atrop-row{padding:2px 0;border-bottom:1px solid rgba(148,163,184,.08);white-space:pre-wrap;word-break:break-word;display:flex;gap:7px}
+    #atropbot-console .atrop-ts{color:#475569;flex:0 0 auto}
+    #atropbot-console .atrop-msg{flex:1 1 auto}
+    .atrop-lv-info .atrop-msg{color:#e2e8f0}
+    .atrop-lv-ok .atrop-msg{color:#4ade80}
+    .atrop-lv-warn .atrop-msg{color:#fbbf24}
+    .atrop-lv-erro .atrop-msg{color:#f87171;font-weight:700}
+    .atrop-lv-calc .atrop-msg{color:#7dd3fc}
   `;
   (document.head || document.documentElement).appendChild(st);
 
@@ -88,8 +107,35 @@ TESLA_ENGINE_JS = r"""
   let px = window.innerWidth / 2, py = window.innerHeight - 90;
   cursor.style.left = px + 'px'; cursor.style.top = py + 'px';
 
+  // Console ao vivo (bastidores) — feed rolável do que está acontecendo.
+  const con = document.createElement('div'); con.id = 'atropbot-console';
+  con.innerHTML = '<div class="atrop-chead"><span class="atrop-cdot"></span>ATROPBOT · CONSOLE'
+    + '<span class="atrop-ccount" id="atropbot-ccount">0</span></div>'
+    + '<div class="atrop-cbody" id="atropbot-cbody"></div>';
+  document.body.appendChild(con);
+
   const A = {
     _pos: { x: px, y: py },
+    _n: 0,
+    log: function (nivel, msg) {
+      const body = document.getElementById('atropbot-cbody');
+      if (!body) return;
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const ss = String(now.getSeconds()).padStart(2, '0');
+      const row = document.createElement('div');
+      row.className = 'atrop-row atrop-lv-' + (nivel || 'info');
+      row.innerHTML = '<span class="atrop-ts">' + hh + ':' + mm + ':' + ss + '</span>'
+        + '<span class="atrop-msg">' + String(msg).replace(/</g, '&lt;') + '</span>';
+      body.appendChild(row);
+      while (body.childNodes.length > 250) body.removeChild(body.firstChild);
+      const perto = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+      if (perto) body.scrollTop = body.scrollHeight;
+      this._n++;
+      const c = document.getElementById('atropbot-ccount');
+      if (c) c.textContent = this._n;
+    },
     status: function (msg, cor) {
       let h = document.getElementById('atropbot-hud');
       if (!h) { h = document.createElement('div'); h.id = 'atropbot-hud'; document.body.appendChild(h); }
@@ -254,16 +300,34 @@ class RoboAtropbot:
         self._eventos_ja_capturados = set()  # evita registrar o mesmo aviso repetido nesta execução
         self._page_atual = None  # página em uso — usada pelo HUD "estilo Tesla" na tela
 
-    def _log(self, mensagem):
+    def _log(self, mensagem, nivel=None):
         db.registrar_log_geral(mensagem)
         self._log_bus.publicar({"tipo": "log_geral", "mensagem": mensagem, "hora": time.time()})
-        # Espelha o log no HUD flutuante da própria tela do Trizy (best-effort).
+        # Espelha o log no HUD + console "estilo Tesla" na própria tela (best-effort).
         if self._page_atual is not None:
             self._hud(self._page_atual, mensagem)
+            self._console(self._page_atual, mensagem, nivel or self._nivel_auto(mensagem))
         item_id = self._maquina.item_atual_id
         if item_id is not None:
             db.registrar_log_item(item_id, mensagem)
             self._log_bus.publicar({"tipo": "log_item", "item_id": item_id, "mensagem": mensagem, "hora": time.time()})
+
+    def _debug(self, mensagem):
+        """Linha 'bastidores' (cálculos/decisões): vai pro console azul-claro
+        na tela e também é persistida no log normal, pra ajudar a caçar bug."""
+        self._log("· " + mensagem, nivel="calc")
+
+    @staticmethod
+    def _nivel_auto(mensagem):
+        """Classifica a cor da linha no console a partir do texto."""
+        m = (mensagem or "").lower()
+        if any(t in m for t in ("erro", "não consegui", "nao consegui", "falha", "sem ctr", "inválid", "invalid", "exception")):
+            return "erro"
+        if any(t in m for t in ("alerta", "aviso", "vencid", "pausad", "pulando", "pulad", "retent", "reenfile")):
+            return "warn"
+        if any(t in m for t in ("sucesso", "agendado", "concluíd", "concluid", "escolhida", "confirmado", "ok")):
+            return "ok"
+        return "info"
 
     def _status_item(self, item_id, novo_status):
         db.atualizar_status_item(item_id, novo_status)
@@ -581,13 +645,17 @@ class RoboAtropbot:
                 return False
 
             # Navega até o mês/ano alvo usando as setas do calendário.
+            hoje = datetime.now().date()
+            para_frente = alvo >= hoje
+            direcao = "avançar" if para_frente else "voltar"
+            self._debug(f"{rotulo}: calendário aberto. Alvo={alvo_str} → navegar mês a mês ({direcao}) até {alvo_mes_ano}.")
             seta_prox = page.locator(
                 "button.md-calendar-next-month, button[aria-label*='Próximo' i], button[aria-label*='Next' i]"
             ).first
             seta_ant = page.locator(
                 "button.md-calendar-previous-month, button[aria-label*='Anterior' i], button[aria-label*='Previous' i]"
             ).first
-            seta = seta_prox if alvo >= datetime.now().date() else seta_ant
+            seta = seta_prox if para_frente else seta_ant
 
             def _mes_visivel():
                 try:
@@ -595,14 +663,17 @@ class RoboAtropbot:
                 except Exception:
                     return False
 
+            passos = 0
             for _ in range(60):
                 if _mes_visivel():
                     break
                 if seta.count() > 0 and seta.is_visible():
                     seta.click(force=True)
+                    passos += 1
                     time.sleep(0.12)
                 else:
                     break
+            self._debug(f"{rotulo}: {passos} clique(s) de mês até chegar em {alvo_mes_ano}.")
 
             # Clica no dia DENTRO do mês alvo (evita pegar o mesmo número de
             # um mês vizinho num calendário rolável).
@@ -630,7 +701,12 @@ class RoboAtropbot:
         no calendário HOJE + CNH_DIAS_BUFFER dias — em vez de deixar o Trizy
         exibir 'A data de validade deve ser maior que o dia atual' e pausar a
         fila. Se a data já for futura, não mexe."""
-        alvo = datetime.now().date() + timedelta(days=CNH_DIAS_BUFFER)
+        hoje = datetime.now().date()
+        alvo = hoje + timedelta(days=CNH_DIAS_BUFFER)
+        self._debug(
+            f"Cálculo CNH: hoje {hoje.strftime('%d/%m/%Y')} + {CNH_DIAS_BUFFER} dias "
+            f"= {alvo.strftime('%d/%m/%Y')} (só aplica se estiver vazia/vencida)."
+        )
         try:
             datepicker = self._datepicker_cnh(page)
             valor_atual = ""
@@ -664,6 +740,7 @@ class RoboAtropbot:
         except Exception:
             self._log(f"[{placa}] Data da Cota em formato inesperado ('{data_cota}') — esperado dd/mm/aaaa.")
             return
+        self._debug(f"Cálculo Data da Cota: '{data_cota}' → dia {alvo.day} de {MESES_PT[alvo.month - 1]} {alvo.year}.")
         datepicker = self._datepicker_contrato(page)
         self._selecionar_data_calendario(page, placa, "Data da Cota", alvo, datepicker)
 
@@ -683,6 +760,18 @@ class RoboAtropbot:
             page.evaluate(
                 "([m, c]) => { if (window.__ATROPBOT) window.__ATROPBOT.status(m, c); }",
                 [texto, cor],
+            )
+        except Exception:
+            pass
+
+    def _console(self, page, texto, nivel="info"):
+        """Adiciona uma linha no CONSOLE ao vivo (bastidores) da tela do Trizy.
+        Best-effort."""
+        try:
+            self._garantir_tesla(page)
+            page.evaluate(
+                "([n, m]) => { if (window.__ATROPBOT) window.__ATROPBOT.log(n, m); }",
+                [nivel, texto],
             )
         except Exception:
             pass
@@ -782,6 +871,13 @@ class RoboAtropbot:
                     self._page_atual = page
                 if status in STATUS_JA_CONCLUIDOS:
                     continue
+
+                tent = tentativas.get(item_id, 1)
+                self._debug(
+                    f"Item {_idx}/{len(fila_trabalho)} (tentativa {tent}/{MAX_TENTATIVAS_ITEM}) | "
+                    f"placa={placa} cpf={cpf} | terminal={fs_destino} fazenda={fazenda} "
+                    f"contrato={contrato} data_cota={data_cota or '—'}"
+                )
 
                 lote_chave = (fs_destino, fazenda, contrato)
                 if lote_chave in lotes_bloqueados:
